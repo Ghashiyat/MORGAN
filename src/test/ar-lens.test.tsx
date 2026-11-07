@@ -1,0 +1,32 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { ArLens } from "@/components/morgan/ar-lens";
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+describe("Lens capture lifecycle", () => {
+  it("waits for a full frame, ignores unrelated replies, and recovers from scan failure", async () => {
+    const track = { stop: vi.fn() };
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) } });
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
+    const draw = vi.fn();
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ drawImage: draw } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue("data:image/jpeg;base64,AAAA");
+    const send = vi.fn();
+    const view = render(<ArLens onClose={() => {}} onSend={send} />);
+    expect(screen.getByRole("button", { name: "Camera starting…" })).toBeDisabled();
+    const video = view.container.querySelector("video");
+    if (!video) throw new Error("Missing camera video");
+    Object.defineProperties(video, { videoWidth: { value: 1920 }, videoHeight: { value: 1080 } });
+    fireEvent.loadedData(video);
+    fireEvent.click(screen.getByRole("button", { name: /^Scan$/ }));
+    expect(draw).toHaveBeenCalledWith(video, 0, 0, 1280, 720);
+    expect(send.mock.calls[0]?.[1]?.[0]?.dataUrl).toBe("data:image/jpeg;base64,AAAA");
+    act(() => window.dispatchEvent(new CustomEvent("morgan:reply", { detail: "Unrelated" })));
+    expect(screen.getByRole("button", { name: "Scanning…" })).toBeDisabled();
+    act(() => window.dispatchEvent(new CustomEvent("morgan:lens-result", { detail: { error: "Scan failed" } })));
+    expect(screen.getByText("Scan failed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Scan$/ })).toBeEnabled();
+    await waitFor(() => expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledOnce());
+    view.unmount();
+    expect(track.stop).toHaveBeenCalled();
+  });
+});
